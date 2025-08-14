@@ -1,0 +1,73 @@
+name: Daily Heartbeat to Google Sheet
+
+on:
+  schedule:
+    - cron: "0 5 * * *"   # 05:00 UTC daily ≈ 06:00 Lisbon in summer (your TZ)
+  workflow_dispatch:
+
+jobs:
+  append-row:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install minimal deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install gspread google-auth
+
+      - name: Append timestamp row to Google Sheet
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          DATA1_ID: ${{ secrets.DATA1_ID }}   # your sheet id secret
+          TAB_NAME: heartbeat                 # change this if you want a different tab
+        run: |
+          python - << 'PY'
+          import os, json, datetime, pytz
+
+          import gspread
+          from google.oauth2.service_account import Credentials
+
+          # Auth from secret JSON
+          creds = Credentials.from_service_account_info(
+              json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]),
+              scopes=["https://www.googleapis.com/auth/spreadsheets"]
+          )
+          gc = gspread.authorize(creds)
+
+          # Open sheet by ID and ensure worksheet exists
+          sh = gc.open_by_key(os.environ["DATA1_ID"])
+          tab_name = os.environ.get("TAB_NAME", "heartbeat")
+          try:
+            ws = sh.worksheet(tab_name)
+          except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet(title=tab_name, rows=1000, cols=10)
+            # Add header row (first time only)
+            ws.append_row(["timestamp_iso", "timestamp_lisbon", "source"], value_input_option="USER_ENTERED")
+
+          # Timestamps
+          now_utc = datetime.datetime.now(datetime.timezone.utc)
+          # Europe/Lisbon explicit timestamp
+          try:
+            import zoneinfo
+            lis_tz = zoneinfo.ZoneInfo("Europe/Lisbon")
+          except Exception:
+            import pytz
+            lis_tz = pytz.timezone("Europe/Lisbon")
+          now_lisbon = now_utc.astimezone(lis_tz)
+
+          row = [
+            now_utc.isoformat(timespec="seconds"),
+            now_lisbon.strftime("%Y-%m-%d %H:%M:%S %Z"),
+            "github_actions"
+          ]
+
+          ws.append_row(row, value_input_option="USER_ENTERED")
+          print("Appended:", row)
+          PY
